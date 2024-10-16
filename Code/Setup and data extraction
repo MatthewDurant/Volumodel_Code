@@ -1,0 +1,142 @@
+#####Install packages#####
+library(spocc)
+library(occCite)
+library(CoordinateCleaner)
+library(dplyr)
+library(voluModel)
+library(ggplot2) # For fancy plotting
+library(terra) 
+library(robis)
+library(occCite)
+library(spatialEco)
+library(devtools)
+#####Occurence data#####
+land <- rnaturalearth::ne_countries(scale = "large", 
+                                    returnclass = "sf")
+land <- sf::st_crop(land, c(xmin = xmin, ymin = ymin, xmax = xmax, ymax = ymax))
+
+
+xmin = 125
+xmax = 150
+ymin = 24
+ymax = 48
+
+my_bbox = st_bbox(c(xmin=xmin, xmax=xmax,
+                    ymin=ymin, ymax=ymax,
+                    crs=4326))
+
+dates <- c('2010-01-01', '2024-01-01')
+
+pbf <- spocc::occ(query = "Thunnus orientalis", 
+                  from=c('obis', 'gbif', 'inat'), 
+                  geometry = my_bbox)
+pbf
+pbf_df <- occ2df(pbf)
+pbf_df <- as.data.frame(pbf_df)
+
+pbf_sf <- st_as_sf(pbf_df, coords=c('longitude','latitude'), crs=4326, remove=F)
+
+
+ggplot() + geom_sf(data=land) + theme_bw() +
+  geom_sf(data = pbf, size=0.5, color='red') +
+  labs(title = "Thunnus orientalis", x='lon', y='lat')
+
+
+format(as.Date(df1$Date, format="%d/%m/%Y"),"%Y")
+
+#####SST#####
+#SST Merge
+pbf_sf$year <- format(as.Date(pbf_sf$date, format="%Y-%m-%d"),"%Y")
+head(pbf_sf$year)
+
+na.zero <- function (x) {
+  x[is.na(x)] <- 2006
+  return(x)
+}
+
+pbf_sf$year <- na.zero(pbf_sf$year)
+
+pbf <- subset(pbf_sf, year>=2000)
+
+sst <- stack('/Users/matthewdurant/Downloads/subset.nc')
+crs(sst) <- 4326
+sst <- crop(sst, my_bbox)
+plot(sst)
+sst <- as.data.frame(sst, xy=T)
+sst <- st_as_sf(sst, coords=c('x','y'), remove=F)
+st_crs(sst) <- 4326
+sst <- sst %>% drop_na()
+
+pbf_2018 <- subset(pbf, year==2018)
+pbf_2018
+
+pbf_2018 <- pbf_2018[-c(1),]#Remove duplicates
+
+st_join(pbf_2018, sst, join = st_nearest_feature, left=T)
+
+pbf_2018$sst <- c(20.61)
+
+
+
+
+
+
+
+######Volumodel setup########
+require(sf)
+temperature <- read_sf(dsn = '/Users/matthewdurant/Desktop/MSc Spring 2024/woa18_decav_t00mn01.shp')
+temperature <- st_crop(temperature, xmin=125, xmax=150, ymin=25, ymax=48)
+temperature <- vect(temperature)
+head(temperature)
+
+layout(matrix(c(1, 2), ncol=2, byrow=TRUE), widths=c(4, 1))
+land <- rnaturalearth::ne_countries(scale = "large", 
+                                    returnclass = "sf")[1]
+temperatureForPlot <- temperature
+crs(temperatureForPlot) = crs(land)
+ext <- ext(temperatureForPlot)
+plot(temperatureForPlot, main = "Distribution of voluModel Subset\nof WOA Temperature 2018",
+     pch = 20, col = "red", xlim = ext[1:2], ylim = ext[3:4], cex = .6, mar = c(2,2,3,2))
+plot(land, col = "black", add = T)
+
+# What does the WOA depth structure look like?
+depths <- names(temperatureForPlot)
+depths <- as.numeric(gsub(depths[-1], pattern = "[d,M]", replacement = ""))
+plot(0, xlim = c(0,1), ylim = c(0-max(depths), 0), axes=FALSE, type = "n", xlab = "", ylab = "Depth Intervals (m)")
+axis(2, at = 0-depths, labels = depths)
+
+# Creating a bottom raster
+temperatureBottom <- bottomRaster(temperature)
+# Creating a SpatRaster vector
+template <- centerPointRasterTemplate(temperature)
+tempTerVal <- rasterize(x = temperature, y = template, field = names(temperature))
+
+# Get names of depths
+envtNames <- gsub("[d,M]", "", names(temperature))
+envtNames[[1]] <- "0"
+names(tempTerVal) <- envtNames
+temperature <- tempTerVal
+rm(tempTerVal)
+
+# How do these files look?
+par(mfrow=c(1,2))
+p1 <- oneRasterPlot(temperature[[1]], land = land, landCol = "black", 
+                    title= "Surface Temperature (C)")
+
+p2 <- oneRasterPlot(temperatureBottom,land = land, landCol = "black", 
+                    title = "Bottom Temperature (C)")
+
+plot(temperatureBottom)
+
+
+
+
+
+
+
+
+
+
+
+
+
