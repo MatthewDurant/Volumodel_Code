@@ -77,9 +77,75 @@ st_join(pbf_2018, sst, join = st_nearest_feature, left=T)
 pbf_2018$sst <- c(20.61)
 
 
+#Salinity Merge
+sal <- stack('/Users/matthewdurant/Downloads/woa23_95A4_s15_04.nc')
+crs(sal) <- 4326
+sal <- crop(sal, my_bbox)
+plot(sal$X0)
+sal <- as.data.frame(sal, xy=T)
+sal <- st_as_sf(sal, coords=c('x','y'), remove=F)
+sal <- subset(sal, select=c(x,y,X0))
+st_crs(sal) <- 4326
+sal <- sal %>% drop_na()
 
 
+join <- st_join(pbf_2003, sal, join = st_nearest_feature, left=T)
+join
+#pbf_NA$sal <- c(33.81,33.37)
+pbf_2003$sal <- (33.33)
+pbf_2003
 
+#Bathymetry
+bathy <- raster('/Users/matthewdurant/Downloads/ETOPO1_Bed_c_gdal.grd')
+bathy <- crop(bathy, my_bbox)
+bathy <- resample(bathy, sst_rast, method='bilinear')
+bathy <- as.data.frame(bathy, xy=T)
+bathy <- st_as_sf(bathy, coords=c('x','y'), remove=F, crs=4326)
+bathy <- drop_na(bathy)
+plot(bathy)
+bathy <- subset(bathy, layer<0)
+bathy$bathymetry <- bathy$layer*(-1)
+
+ggplot() + geom_tile(data=bathy, aes(x=x, y=y, fill=depth)) +
+  scale_fill_viridis(option='H') + geom_sf(data=land, fill='white')+
+  labs(x='lon', y='lat', title='Bathymetry', fill='Depth (m)') + theme_classic()
+
+join <- st_join(pbf_2003, bathy, join = st_nearest_feature, left=T)
+pbf_2003$bathymetry <- round(join$depth, 2)
+head(pbf_2008)
+
+pbf <- rbind(pbf_2024, pbf_2023, pbf_2022, pbf_2019, pbf_2018, pbf_2017, pbf_2016,
+             pbf_2015, pbf_2014, pbf_2012, pbf_2011, pbf_2008, pbf_2006, pbf_2003)
+head(pbf)
+
+####shore_dist
+library(tidyverse)
+library(sf)
+library(geosphere)
+library(osmdata)
+
+# get bouding box for osm data download (England) and 
+# download coastline data for this area
+osm_box <- getbb (place_name = "Japan")
+osm_bbox <- opq (osm_box)
+osm_bbox <- add_osm_feature(osm_bbox, "natural", "coastline")
+osm_bbox <- osmdata_sf(osm_bbox) 
+
+# use dist2Line from geosphere - only works for WGS84 
+#data
+pdf_2024$dist_to_shore <- geosphere::dist2Line(p = st_coordinates(pbf_2024), 
+                                               line = 
+                                                 st_coordinates(osm_bbox$osm_lines)[,1:2])
+
+#combine initial data with distance to coastline
+pbf_2024b <- cbind(pbf_2024, dist) %>%
+  mutate(miles=distance/1609)
+pbf_2024b$km <- pbf_2024b$miles*1.60934
+
+ggplot() + 
+  geom_sf(data=land) +
+  geom_sf(data=pbf_2024b) 
+#geom_segment(data=pbf_2024b,aes(x=longitude,y=latitude,xend=lon,yend=lat))
 
 
 ######Volumodel setup########
