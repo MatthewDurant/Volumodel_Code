@@ -1,0 +1,139 @@
+#Importing and merging covariate data
+#Pull desired columns from presence datasets and merge
+occ_obis <- subset(xx, select = c("originalScientificName","decimalLatitude","decimalLongitude",
+                                  "date_year","id","dist_to_coast.km","dist_to_range.km"))
+colnames(occ_obis) <- c("Name", "Latitude", "Longitude", "Year", 
+                        "Key", "dist_to_coast.km", "dist_to_range.km", "geometry")
+head(occ_obis)
+occ_gbif <- subset(zz, select = c("scientificName", "decimalLatitude", "decimalLongitude",
+                                  "year", "key", "dist_to_coast.km", "dist_to_range.km"))
+colnames(occ_gbif) <- c("Name", "Latitude", "Longitude", "Year", 
+                        "Key", "dist_to_coast.km", "dist_to_range.km", "geometry")
+head(occ_gbif)
+occurrence <- rbind(occ_obis, occ_gbif)
+
+occ_list <- split(occurrence, occurrence$Year)
+
+#Load SST by year 
+files <- list.files('/Users/matthewdurant/Desktop/MSc Spring 2024/Covar/SST/sst2000', pattern = '.nc', full.names = T)
+sst.rast <- rast(files) #load as raster object
+sst.mean <- mean(sst.rast) #Calculate annual mean
+sst.range <- max(sst.rast) - min(sst.rast) #Calculate range of sst values
+rm(sst.rast) #Remove large raster file
+
+#Transform and merge SST values with presence data
+sst.mean.df <- as.data.frame(sst.mean, xy=T)#Mean
+sst.mean.df$x <- ifelse(sst.mean.df$x>=180, sst.mean.df$x-360, sst.mean.df$x)
+colnames(sst.mean.df) <- c('lon','lat','sst')
+sst.mean.df <- st_as_sf(sst.mean.df, coords=c('lon','lat'), remove=T, crs=4326)
+occ_list[['2000']] <- st_join(occ_list[['2000']], sst.mean.df, join = st_nearest_feature, left = T)
+
+sst.range.df <- as.data.frame(sst.range, xy=T)#Range
+sst.range.df$x <- ifelse(sst.range.df$x>=180, sst.range.df$x-360, sst.range.df$x)
+colnames(sst.range.df) <- c('lon','lat','sst_rng')
+sst.range.df <- st_as_sf(sst.range.df, coords=c('lon','lat'), remove=T, crs=4326)
+occ_list[['2000']] <- st_join(occ_list[['2000']], sst.range.df, join = st_nearest_feature, left = T)
+
+head(occ_list[['2000']])
+
+occurrence <- do.call(rbind, occ_list) #merge into single df
+
+
+#Bathy
+bathy <- rast('/Users/matthewdurant/Downloads/terrain_characteristics_6d78_4f59_9e1f_U1732245702719.nc')
+
+bathy.df <- as.data.frame(bathy, xy=T)
+colnames(bathy.df) <- c('lon', 'lat', 'depth')
+
+bathy.sf <- subset(bathy.df, lat>=-50 & lat<=50)
+bathy.sf <- subset(bathy.sf, lon<=-100 | lon>=140)
+bathy.sf <- st_as_sf(bathy.sf, coords=c('lon','lat'), crs=4326)
+
+occurrence <- st_join(occurrence, bathy.sf, join = st_nearest_feature, left=T)
+occ_list_df <- do.call(rbind, occ_list)
+# Remove duplicate columns from df2
+bathy_com <- occurrence[, !(colnames(occurrence) %in% colnames(occ_list_df))]
+head(bathy_com)
+# Combine using cbind
+combined_df <- cbind(occ_list_df, bathy_com)
+head(combined_df)
+combined_df <- combined_df[, -ncol(combined_df)]
+occurrence <- combined_df
+head(occurrence)
+
+occurrence <- occ_list_df
+
+ggplot() + geom_sf(data=land) + theme_bw() + #Plot
+  geom_sf(data = occurrence, size=0.5, color='red') +
+  labs(title = myspecies, x='lon', y='lat')
+
+plot(nc.grid,col='grey',legend=F)
+points(occ_table[occ_table$Name=='Thunnus orientalis',2:3],pch='+',col='red')
+
+occ_table <- st_drop_geometry(occurrence)
+occ_table <- as.data.frame(occ_table)
+occ_table <- occ_table[occ_table]
+head(occ_table)
+
+ncgrid = rast(region)
+plot(region)
+
+bg_rand <- terra::spatSample(region, 500, "random", na.rm=T, as.points=TRUE)
+sp_cells <- terra::extract(region, occ_table[occ_table$Name=='Thunnus orientalis',3:2])
+
+
+
+
+
+
+#Variable by year 2000 2001 2002 2004 2005 2006 2007 2008 2009 2010 2011 2013 2014 2015 2018 2019 2021 2022 2023 2024
+files <- list.files('/Users/matthewdurant/Desktop/MSc Spring 2024/Covar/SSH/SSH2024', pattern = '.nc', full.names = T)
+SSH.rast <- rast(files) #load as raster object
+SSH.mean <- mean(SSH.rast) #Calculate annual mean
+SSH.range <- max(SSH.rast) - min(SSH.rast) #Calculate range of SSH values
+rm(SSH.rast) #Remove large raster file
+
+#Transform and merge SSH values with presence data
+SSH.mean.df <- as.data.frame(SSH.mean, xy=T)#Mean
+SSH.mean.df$x <- ifelse(SSH.mean.df$x>=180, SSH.mean.df$x-360, SSH.mean.df$x)
+colnames(SSH.mean.df) <- c('lon','lat','SSH')
+SSH.mean.df <- st_as_sf(SSH.mean.df, coords=c('lon','lat'), remove=T, crs=4326)
+occ_list[['2024']] <- st_join(occ_list[['2024']], SSH.mean.df, join = st_nearest_feature, left = T)
+
+SSH.range.df <- as.data.frame(SSH.range, xy=T)#range
+SSH.range.df$x <- ifelse(SSH.range.df$x>=180, SSH.range.df$x-360, SSH.range.df$x)
+colnames(SSH.range.df) <- c('lon','lat','SSH_rng')
+SSH.range.df <- st_as_sf(SSH.range.df, coords=c('lon','lat'), remove=T, crs=4326)
+occ_list[['2024']] <- st_join(occ_list[['2024']], SSH.range.df, join = st_nearest_feature, left = T)
+head(occ_list[['2024']])
+
+occurrence <- do.call(rbind, occ_list)
+
+set.seed(123)
+#K Mean Cluster Analysis for CHLmin
+k_subset <- subset(occurrence, select =c(sst, sss, depth, chl, prey, SSH, CHLgrad, dist_to_coast.km, dist_to_range.km))
+k <- st_drop_geometry(k)
+k$chl <- log(k$chl)
+k$CHLgrad <- log(k$CHLgrad)
+k <- scale(k, center = TRUE, scale = TRUE)
+head(k)
+k.mean <- kmeans(k, 2, nstart = 500)
+k.mean
+k.means_table <- data.frame(k.mean$size, k.mean$centers)
+k.mean_df <- data.frame(Cluster=k.mean$cluster, k_subset)
+head(k.mean_df)
+
+fviz_cluster(k.mean, data = k, geom=c('point'), ellipse.type='euclid')
+
+split_data <- split(k.mean_df, k.mean_df$Cluster)
+
+# Access individual dataframes
+df_1 <- split_data[["1"]]
+df_2 <- split_data[["2"]]
+df_3 <- split_data[["3"]]
+df_4 <- split_data[["4"]]
+df_5 <- split_data[["5"]]
+
+quantile(df_2$chl, probs=c(0.15,0.85))
+
+
