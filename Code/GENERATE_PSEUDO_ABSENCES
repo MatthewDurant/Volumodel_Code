@@ -1,0 +1,110 @@
+set.seed(123)
+
+#Pseudo-absence data generation
+region <- covar_rast
+crs(region) <- crs(land)
+#subset and drop sf geometry
+occ.df <- st_drop_geometry(occurrence)
+occ.df <- subset(occ.df, select=c('Longitude','Latitude'))
+
+# Create SpatVector object of known occurrences:
+occ_imag <- terra::vect( as.matrix( occ.df, crs=crs(land)))
+
+# Then, place a buffer of 200 km radius around our presence points
+v_buf <- terra::buffer(occ_imag, width=10)
+crs(v_buf) <- crs(land)
+v_buf
+# Set all raster cells outside the buffer to NA
+region_buf <- terra::mask(region, v_buf)
+region_buf
+
+# Randomly select background data within the buffer
+bg_rand_buf <- terra::spatSample(region_buf, 500, "random", na.rm=T, as.points=TRUE)
+pseudo_abs <- st_as_sf(bg_rand_buf)
+
+# Plot the map and data
+plot(region,col='grey',legend=F)
+plot(region_buf, legend=F, add=T)
+points(occ.df,pch='+',col='red')
+points(bg_rand_buf,pch=19,cex=0.3, col='blue')
+
+#Add columns to pseudo_abs
+head(pseudo_abs)
+pseudo_abs$presence <- 0
+pseudo_abs$Name <- myspecies
+pseudo_abs <- cbind(pseudo_abs, coor)
+pseudo_abs$Year <- 0
+pseudo_abs$Key <- seq_len(nrow(pseudo_abs))
+
+#DISTANCE FROM COAST
+dist.pseudo <- geosphere::dist2Line(p = st_coordinates(pseudo_abs), line = coastline50)
+#combine initial data with distance to coastline
+pseudo_abs <- cbind(pseudo_abs, dist.pseudo) %>%
+  mutate(dist_to_coast.km=distance/1000)
+head(pseudo_abs)
+pseudo_abs <- pseudo_abs[,-c(11,12)] 
+
+#DISTANCE TO NATURAL RANGE
+#run cc_iucn()
+pseudo_abs.df <- subset(pseudo_abs, select=c('Name','Longitude','Latitude','Key'))
+pseudo_abs.df <- st_drop_geometry(pseudo_abs.df)
+head(pseudo_abs.df)
+colnames(pseudo_abs.df) <- c('species','decimalLongitude','decimalLatitude','key')
+range_flags.abs <- cc_iucn(x=pseudo_abs.df, 
+                            range = nat_range,
+                            lon = "decimalLongitude",
+                            lat = "decimalLatitude",
+                            species = "species",
+                            #buffer = 100000, #100km buffer
+                            value = "clean")
+range_flags.abs <- pseudo_abs.df[!(pseudo_abs.df$key %in% range_flags.abs$key ),]
+range_flags.abs <- st_as_sf(range_flags.abs, 
+                            coords = c("decimalLongitude", "decimalLatitude"),
+                            crs=st_crs(nat_range), remove=F)
+head(range_flags.abs)
+
+dist_to_range.abs <- geosphere::dist2Line(p = st_coordinates(range_flags.abs), 
+                                             line = st_coordinates(nat_range)[,1:2])
+colnames(dist_to_range.abs) <- c("distance_to_range", "lon_end", "lat_end")
+head(dist_to_range.abs)
+                          
+range_flags.abs <- cbind(range_flags.abs, dist_to_range.abs) %>%
+  mutate(dist_to_range.km=distance_to_range/1000)
+head(range_flags.abs)
+
+out_of_range <- subset(range_flags.abs, select=c("dist_to_range.km"))
+
+pseudo_abs <- st_join(pseudo_abs, out_of_range)
+# Replace NA with 0 in a specific column (e.g., "column_name")
+pseudo_abs$dist_to_range.km[is.na(pseudo_abs$dist_to_range.km)] <- 0
+head(pseudo_abs)
+
+
+#Load Raster Covar Data
+file_name <- "/Users/matthewdurant/Downloads/cmems_mod_glo_phy-mnstd_my_0.25deg_P1D-m_1737615306860.nc"
+covar.rast <- rast(file_name) #load as rast object
+plot(covar.rast)
+crs(covar.rast) <- crs(v_buf)
+covar_buf <- terra::mask(covar.rast, v_buf)
+covar_buf <- as.data.frame(covar_buf, xy=T)
+colnames(covar_buf) <- c('lon','lat','SSH')
+covar_buf <- st_as_sf(covar_buf, coords=c('lon','lat'), remove=T, crs=4326)
+
+pseudo_abs <- st_join(pseudo_abs, covar_buf, join = st_nearest_feature, left = T) #Join with absence data
+head(pseudo_abs)
+
+pseudo_abs$CHLgrad <- pseudo_abs$chl/1000
+
+pseudo_abs$Year <- sample(2000:2024, 500, replace=T)
+
+occ_data <- rbind(occurrence, pseudo_abs)
+head(occ_data)
+
+
+ggplot() + geom_sf(data=land) + theme_bw() + #Plot final data points
+  geom_sf(data = occ_data, size=0.5, color='red') +
+  labs(title = myspecies, x='lon', y='lat')
+
+
+
+
