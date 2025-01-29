@@ -1,0 +1,380 @@
+####LOAD REQUIRED PACKAGES#####
+library(rnaturalearth)
+library(dynamicSDM)
+library(rnaturalearthdata)
+library(CoordinateCleaner)
+library(countrycode)
+library(robis)
+library(rgbif)
+library(factoextra)
+require(ggplot2)
+require(devtools)
+require(tidyr)
+require(starve)
+require(Rcpp)
+require(sf)
+require(sp)
+require(stars)
+require(scico)
+require(gtools)
+require(ggspatial)
+require(knitr)
+require(viridis)
+require(dplyr)
+require(reshape)
+require(parallel)
+require(terra)
+require(DHARMa)
+require(raster)
+require(jtools)
+require(ggnewscale)
+require(effects)
+require(tmap)
+require(jtools)
+require(magrittr)
+require(sdmTMB)
+require(sdmTMBextra)
+require(gridExtra)
+#####
+#LOAD IN OBIS/GBIF DATA
+myspecies <- c("Thunnus orientalis", "Thunnus albacares") #Pacific Bluefin Tuna
+myspecies_range <- "/Users/matthewdurant/Downloads/redlist_species_data_de9b8e23-d656-44b4-8b87-b9ccdd3853f3/data_0.shp" #From IUCN website
+
+#Define Study Area
+land <- rnaturalearth::ne_countries(scale = "large", returnclass = "sf")
+ggplot()+geom_sf(data=land)+theme_bw() #plot
+
+###############OBIS (robis)#####
+library(robis)
+obis_data <- robis::occurrence(scientificname = myspecies)
+head(obis_data)
+# CHECK HOW DATA IS ORGANIZED
+names(obis_data)
+
+#FLAG POSSIBLE PROBLEMS
+myspecies_obis <- as.data.frame(obis_data)
+head(myspecies_obis)
+myspecies_obis$species
+
+flags_obis <- clean_coordinates(x = myspecies_obis, #flag problems
+                           lon = "decimalLongitude", 
+                           lat = "decimalLatitude",
+                           countries = "country",
+                           species = "species") # most test are on by default
+summary(flags_obis)
+plot(flags_obis, lon = "decimalLongitude", lat = "decimalLatitude")
+head(myspecies_obis)
+myspecies_obis <- myspecies_obis[flags_obis$.summary,]
+
+#IDENTIFY & REMOVE DUPLICATED RECORDS
+myspecies_obis <- cc_dupl(x=myspecies_obis,
+                          lon = "decimalLongitude",
+                          lat = "decimalLatitude",
+                          species = "species",
+                          value = "clean")
+
+#IDENTIFY AND REMOVE RECORDS WITH IDENTICAL LAT/LON
+myspecies_obis <- cc_equ(myspecies_obis,
+                         lon = "decimalLongitude",
+                         lat = "decimalLatitude",
+                         test = "absolute",
+                         value = "clean",
+                         verbose = TRUE)
+
+# GET THE COLUMNS THAT MATTER FOR MAPPING AND CLEANING THE OCCURRENCE DATA:
+myspecies_obis <- st_as_sf(myspecies_obis, coords=c('decimalLongitude','decimalLatitude'), crs=4326, remove=F)
+st_crs(myspecies_obis)
+
+ggplot() + geom_sf(data=land) + theme_bw() +
+  geom_sf(data = myspecies_obis, size=0.5, color='red') +
+  labs(title = myspecies, x='lon', y='lat')
+
+# REMOVE RECORDS WITHOUT COORDINATES
+myspecies_obis <- myspecies_obis %>%
+  filter(!is.na(decimalLongitude)) %>%
+  filter(!is.na(decimalLatitude))
+
+#REMOVE RECORDS WITH LOW COORDINATE PRECISION
+myspecies_obis$coordinateUncertaintyInMeters <- as.numeric(myspecies_obis$coordinateUncertaintyInMeters)
+
+myspecies_obis %>% 
+  mutate(Uncertainty = coordinateUncertaintyInMeters / 1000) %>% 
+  ggplot(aes(x = Uncertainty)) +
+  geom_histogram(binwidth = 3) +
+  xlab("Coordinate uncertainty in kilometers") +
+  theme_bw()
+
+myspecies_obis <- myspecies_obis %>% 
+  filter(coordinateUncertaintyInMeters / 1000 <= 100 | is.na(coordinateUncertaintyInMeters)) #filter records ≤100km
+
+# REMOVE UNDESIRABLE DATA SOURCES, ESPECIALLY PRESERVED SPECIMENS
+# which are responsible for the majority of problems
+table(myspecies_obis$basisOfRecord)
+myspecies_obis <- filter(myspecies_obis, basisOfRecord == "HumanObservation" | 
+                           basisOfRecord == "Observation" | 
+                           basisOfRecord == "Occurrence")
+
+#RECORDS WITH SUSPICIOUS INDIVIDUAL COUNTS
+table(myspecies_obis$individualCount)
+myspecies_obis %>% 
+  filter(individualCount < 99 | is.na(individualCount))
+
+#Age of records
+table(myspecies_obis$date_year)
+myspecies_obis <- myspecies_obis %>%
+  filter(date_year >= 2000) # remove records from before 2000
+
+#FLAG RECORDS BASED ON SPECIES NATURAL RANGES
+require(sf)
+require(sp)
+nat_range <- read_sf(dsn = myspecies_range)
+st_crs(nat_range) = 4326 #set CRS
+nat_range$species <- myspecies
+head(nat_range)
+
+ggplot() + #visualize range
+  geom_sf(data=land) + geom_sf(data = nat_range, aes(fill=SCI_NAME), alpha=0.5) +
+  theme_bw() + 
+  theme(legend.position = "none", axis.title = element_blank())
+
+#run cc_iucn()
+range_flags.obis <- cc_iucn(x=myspecies_obis, 
+                            range = nat_range,
+                            lon = "decimalLongitude",
+                            lat = "decimalLatitude",
+                            species = "species",
+                            value = "clean")
+#Get data outside of native range
+range_flags.obis <- myspecies_obis[!(myspecies_obis$id %in% range_flags.obis$id ),]
+
+#plot
+ggplot() + 
+  geom_sf(data=land) + geom_sf(data = nat_range, aes(fill=SCI_NAME), alpha=0.5) +
+  theme_bw() + geom_sf(data=myspecies_obis, color='limegreen') + #Blue = in range, red = not in range
+  geom_sf(data = range_flags.obis, color='darkred') + labs(title = myspecies, x='lon', y='lat') +
+  theme(legend.position = "none", axis.title = element_blank()) 
+
+#DISTANCE FROM COAST
+dist.obis <- geosphere::dist2Line(p = st_coordinates(myspecies_obis), line = coastline50)
+#combine initial data with distance to coastline
+myspecies_obis <- cbind(myspecies_obis, dist.obis) %>%
+  mutate(dist_to_coast.km=distance/1000)
+head(myspecies_obis)
+
+#DISTANCE TO NATURAL RANGE
+dist_to_range.obis <- geosphere::dist2Line(p = st_coordinates(range_flags.obis), line = st_coordinates(nat_range)[,1:2])
+colnames(dist_to_range.obis) <- c("distance_to_range", "lon_end", "lat_end")
+head(dist_to_range.obis)
+                            #combine initial data with distance to natural range
+range_flags.obis <- cbind(range_flags.obis, dist_to_range.obis) %>%
+  mutate(dist_to_range.km=distance_to_range/1000)
+head(range_flags.obis)
+
+#Filter out distance to range >3000
+cl.range_flags.obis <- cc_iucn(x=myspecies_obis, 
+                            range = nat_range,
+                            lon = "decimalLongitude",
+                            lat = "decimalLatitude",
+                            species = "species",
+                            buffer = 3000000, #3000km buffer
+                            value = "clean")
+ggplot() + 
+  geom_sf(data=land) + geom_sf(data = nat_range, aes(fill=SCI_NAME), alpha=0.5) +
+  theme_bw() + geom_sf(data=myspecies_obis, color='blue') + #Blue = in range, red = not in range
+  geom_sf(data = cl.range_flags.obis, color='red') + labs(title = myspecies, x='lon', y='lat') +
+  theme(legend.position = "none", axis.title = element_blank()) 
+
+out_of_range.obis <- subset(range_flags.obis, select=c("distance_to_range", "dist_to_range.km", "lon_end", "lat_end"))
+
+xx <- st_join(myspecies_obis, out_of_range.obis) #Combine obis data to distance calculations
+xx <- subset(xx, dist_to_range.km<=3000|is.na(dist_to_range.km))
+ggplot() + geom_sf(data=land) + theme_bw() + #Plot
+  geom_sf(data = xx, size=0.5, color='red') +
+  labs(title = myspecies, x='lon', y='lat')
+xx$dist_to_range.km[is.na(xx$dist_to_range.km)] <- 0 #Replace NA values with 0
+head(xx$dist_to_range.km) #ID as inside of native habitat
+
+#PLOT DISTANCE CALCULATIONS
+myspecies_obis %>% 
+  mutate(Distance = dist_to_coast.km) %>% 
+  ggplot(aes(x = Distance)) +
+  geom_histogram(binwidth = 50) +
+  xlab("Distance from coast (km)") +
+  theme_bw()
+
+range_flags.obis %>% 
+  mutate(Distance = dist_to_range.km) %>% 
+  ggplot(aes(x = Distance)) +
+  geom_histogram(binwidth = 50) +
+  xlab("Distance from natural range (km)") +
+  theme_bw()
+
+natural_range_plot.obis <- ggplot() +
+  geom_sf(data=land) + geom_sf(data = nat_range, aes(fill=SCI_NAME), alpha=0.5) + theme_bw() +
+  geom_sf(data = xx, color='limegreen') + theme(legend.position = 'none') +
+  geom_sf(data=subset(xx, dist_to_range.km>0), color='darkred') + labs(title = myspecies, x='lon', y='lat') +
+  geom_segment(data = xx, aes(x=decimalLongitude, y=decimalLatitude, xend=lon_end, yend=lat_end))
+natural_range_plot.obis  
+
+
+###############GBIF (rgbif)#####
+library(rgbif)
+gbif_data <- occ_data(scientificName = myspecies, 
+                      hasCoordinate = TRUE, limit = 20000)
+head(gbif_data)
+# CHECK HOW DATA IS ORGANIZED
+names(gbif_data)
+names(gbif_data$data)
+names(gbif_data$meta)
+gbif_data
+
+#FLAG POSSIBLE PROBLEMS
+myspecies_gbif <- as.data.frame(gbif_data$data)
+head(myspecies_gbif)
+
+myspecies_gbif$countryCode <-  countrycode(myspecies_gbif$countryCode, #convert countryCode from ISO2c to ISO3c
+                                           origin =  'iso2c',
+                                           destination = 'iso3c')
+
+flags <- clean_coordinates(x = myspecies_gbif, #flag problems
+                           lon = "decimalLongitude", 
+                           lat = "decimalLatitude",
+                           countries = "countryCode",
+                           species = "species")
+summary(flags)
+plot(flags, lon = "decimalLongitude", lat = "decimalLatitude")
+
+#IDENTIFY & REMOVE DUPLICATED RECORDS
+myspecies_gbif <- cc_dupl(x=myspecies_gbif,
+                              lon = "decimalLongitude",
+                              lat = "decimalLatitude",
+                              species = "species",
+                              value = "clean")
+
+#IDENTIFY AND REMOVE RECORDS WITH IDENTICAL LAT/LON
+#myspecies_gbif <- cc_equ(myspecies_gbif,
+ #                        lon = "decimalLongitude",
+  #                       lat = "decimalLatitude",
+   #                      test = "absolute",
+    #                     value = "clean",
+     #                    verbose = TRUE)
+
+# GET THE COLUMNS THAT MATTER FOR MAPPING AND CLEANING THE OCCURRENCE DATA:
+myspecies_gbif <- st_as_sf(myspecies_gbif, coords=c('decimalLongitude','decimalLatitude'), crs=4326, remove=F)
+
+ggplot() + geom_sf(data=land) + theme_bw() +
+  geom_sf(data = myspecies_gbif, size=0.5, color='red') +
+  labs(title = myspecies, x='lon', y='lat')
+
+# REMOVE RECORDS WITHOUT COORDINATES
+myspecies_gbif <- myspecies_gbif %>%
+  filter(!is.na(decimalLongitude)) %>%
+  filter(!is.na(decimalLatitude))
+
+#REMOVE RECORDS WITH LOW COORDINATE PRECISION
+myspecies_gbif %>% 
+  mutate(Uncertainty = coordinateUncertaintyInMeters / 1000) %>% 
+  ggplot(aes(x = Uncertainty)) +
+  geom_histogram(binwidth = 3) +
+  xlab("Coordinate uncertainty in meters") +
+  theme_bw()
+
+myspecies_gbif <- myspecies_gbif %>% 
+  filter(coordinateUncertaintyInMeters / 1000 <= 100 | is.na(coordinateUncertaintyInMeters)) #filter records ≤100km
+
+# REMOVE UNDESIRABLE DATA SOURCES, ESPECIALLY PRESERVED SPECIMENS
+# which are responsible for the majority of problems
+table(myspecies_gbif$basisOfRecord)
+myspecies_gbif <- filter(myspecies_gbif, basisOfRecord == "HUMAN_OBSERVATION" | 
+                           basisOfRecord == "OBSERVATION" | 
+                           basisOfRecord == "OCCURRENCE")
+
+#RECORDS WITH SUSPICIOUS INDIVIDUAL COUNTS
+table(myspecies_gbif$individualCount)
+myspecies_gbif %>% 
+  filter(individualCount < 99 | is.na(individualCount))
+
+#Age of records
+table(myspecies_gbif$year)
+myspecies_gbif <- myspecies_gbif %>%
+  filter(year >= 2000) # remove records from before 2000
+
+#FLAG RECORDS BASED ON SPECIES NATURAL RANGES
+require(sf)
+require(sp)
+nat_range <- read_sf(dsn = myspecies_range)
+st_crs(nat_range) = 4326 #set CRS
+nat_range$species <- myspecies
+head(nat_range)
+
+ggplot() + #visualize range
+  geom_sf(data=land) + geom_sf(data = nat_range, aes(fill=SCI_NAME), alpha=0.5) +
+  theme_bw() + 
+  theme(legend.position = "none", axis.title = element_blank())
+
+#run cc_iucn()
+range_flags.gbif <- cc_iucn(x=myspecies_gbif, 
+                            range = nat_range,
+                            lon = "decimalLongitude",
+                            lat = "decimalLatitude",
+                            species = "species",
+                            #buffer = 100000, #100km buffer
+                            value = "clean")
+range_flags.gbif <- myspecies_gbif[!(myspecies_gbif$key %in% range_flags.gbif$key ),]
+
+#plot
+ggplot() + 
+  geom_sf(data=land) + geom_sf(data = nat_range, aes(fill=SCI_NAME), alpha=0.5) +
+  theme_bw() + geom_sf(data=myspecies_gbif, color='blue') + #Blue = in range, red = not in range
+  geom_sf(data = range_flags.gbif, color='red') + labs(title = myspecies, x='lon', y='lat') +
+  theme(legend.position = "none", axis.title = element_blank()) 
+    
+#DISTANCE FROM COAST
+dist <- geosphere::dist2Line(p = st_coordinates(myspecies_gbif), line = coastline50)
+#combine initial data with distance to coastline
+myspecies_gbif <- cbind(myspecies_gbif, dist) %>%
+  mutate(dist_to_coast.km=distance/1000)
+head(myspecies_gbif)
+
+#DISTANCE TO NATURAL RANGE
+dist_to_range.gbif <- geosphere::dist2Line(p = st_coordinates(range_flags.gbif), line = st_coordinates(nat_range)[,1:2])
+colnames(dist_to_range.gbif) <- c("distance_to_range", "lon_end", "lat_end")
+head(dist_to_range.gbif)
+#combine initial data with distance to natural range
+range_flags.gbif <- cbind(range_flags.gbif, dist_to_range.gbif) %>%
+  mutate(dist_to_range.km=distance_to_range/1000)
+head(range_flags.gbif)
+
+out_of_range <- subset(range_flags.gbif, select=c("distance_to_range", "dist_to_range.km", "lon_end", "lat_end"))
+
+zz <- st_join(myspecies_gbif, out_of_range) #Combine gbif data to distance calculations
+zz <- subset(zz, dist_to_range.km<=3000|is.na(dist_to_range.km)) #Subset for data within 3000km of native habitat
+ggplot() + geom_sf(data=land) + theme_bw() + #Plot
+  geom_sf(data = myspecies_gbif, size=0.5, color='red') +
+  labs(title = myspecies, x='lon', y='lat')
+zz$dist_to_range.km[is.na(zz$dist_to_range.km)] <- 0 #Replace NA values with 0
+head(zz$dist_to_range.km) #ID as inside of native habitat
+
+#PLOT DISTANCE CALCULATIONS
+myspecies_gbif %>% 
+  mutate(Distance = dist_to_coast.km) %>% 
+  ggplot(aes(x = Distance)) +
+  geom_histogram(binwidth = 50) +
+  xlab("Distance from coast (km)") +
+  theme_bw()
+
+range_flags.gbif %>% 
+  mutate(Distance = dist_to_range.km) %>% 
+  ggplot(aes(x = Distance)) +
+  geom_histogram(binwidth = 100) +
+  xlab("Distance from natural range (km)") +
+  theme_bw()
+
+natural_range_plot <- ggplot() +
+  geom_sf(data=land) + geom_sf(data = nat_range, aes(fill=SCI_NAME), alpha=0.5) + theme_bw() +
+  geom_sf(data = zz, color='limegreen') + theme(legend.position = 'none') +
+  geom_sf(data=subset(zz, dist_to_range.km>0), color='darkred') + labs(title = myspecies, x='lon', y='lat') +
+  geom_segment(data = zz, aes(x=decimalLongitude, y=decimalLatitude, xend=lon_end, yend=lat_end))
+natural_range_plot  
+
+
